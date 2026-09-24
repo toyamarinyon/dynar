@@ -1,15 +1,16 @@
-# dynar（ダイナー）
+# dynar
 
-SQLite のファイルを開くように、ローカルの DynamoDB を使うための Go ライブラリです。
+Use a local DynamoDB as easily as opening a SQLite file — a Go library.
 
-Docker も Java も外部サーバーも daemon も待受ポートも不要です。
-AWS SDK for Go v2 が送信する HTTP リクエストをプロセス内で受け取り、
-DynamoDB の操作を SQLite に変換して、SDK が理解するレスポンスを返します。
+No Docker, no Java, no external server, no daemon, no listening port.
+It receives the HTTP requests sent by the AWS SDK for Go v2 inside your
+process, translates DynamoDB operations to SQLite, and returns responses
+the SDK understands.
 
-consumer の repository や CRUD コードは本番とローカルで共通のままにできます。
-切り替えが必要なのは client の組み立て部分だけです。
+Your repository and CRUD code stays identical between production and
+local development. The only thing that switches is client construction.
 
-## ファイルに永続化する
+## Persisting to a file
 
 ```go
 db, err := dynar.Open("./.local/dynamo.db")
@@ -24,7 +25,7 @@ client := dynamodb.New(dynamodb.Options{
     HTTPClient:  db.HTTPClient(),
 })
 
-// ここから先は通常の AWS SDK のコード。
+// From here on, it's ordinary AWS SDK code.
 _, err = client.PutItem(ctx, &dynamodb.PutItemInput{
     TableName: aws.String("notes"),
     Item: map[string]types.AttributeValue{
@@ -34,14 +35,15 @@ _, err = client.PutItem(ctx, &dynamodb.PutItemInput{
 })
 ```
 
-`db.HTTPClient()` が返すのは AWS SDK の `aws.HTTPClient` インターフェースを
-満たす値で、`dynamodb.Options.HTTPClient` にそのまま渡せます。
-リクエストはプロセス内で処理され、外部ネットワークには一切送信されません。
-`http.DefaultClient` や環境変数、AWS 認証情報ファイルは変更されません。
+`db.HTTPClient()` returns a value that satisfies the AWS SDK's
+`aws.HTTPClient` interface and can be passed directly to
+`dynamodb.Options.HTTPClient`. Requests are handled in-process and are
+never sent to an external network. `http.DefaultClient`, environment
+variables, and AWS credential files are not touched.
 
-完全なコピー実行可能なコードは `examples/file/` を参照してください。
+See `examples/file/` for a complete, copy-paste runnable example.
 
-## テストではメモリ上だけで動かす
+## In-memory for tests
 
 ```go
 db, err := dynar.Open(":memory:")
@@ -61,17 +63,17 @@ client := dynamodb.New(dynamodb.Options{
 })
 ```
 
-- `Open(":memory:")` のたびに独立した DB が作られます。
-- 並列テスト間でデータは共有されません。
-- テスト用の代替 DynamoDB client インターフェースは不要です。
-  repository は `*dynamodb.Client` のまま受け取れます。
+- Every `Open(":memory:")` creates an independent database.
+- No data is shared between parallel tests.
+- No substitute DynamoDB client interface is needed for tests —
+  repositories keep receiving `*dynamodb.Client`.
 
-`examples/testing/` に repository テストの例があります。
+See `examples/testing/` for a repository test example.
 
-## 本番とローカルで業務コードを共有する
+## Sharing business code between production and local
 
 ```go
-// 起動時の依存組み立てでのみ切り替える。
+// Switch only at dependency assembly time.
 func newClient(ctx context.Context, local bool) (*dynamodb.Client, func() error, error) {
     if local {
         db, err := dynar.Open("./.local/dynamo.db")
@@ -92,83 +94,95 @@ func newClient(ctx context.Context, local bool) (*dynamodb.Client, func() error,
 }
 ```
 
-repository は `*dynamodb.Client` を受け取り、dynar を import しません。
-`examples/app/` に repository と切り替えコードを含む完全な例があります。
+The repository takes `*dynamodb.Client` and does not import dynar.
+`examples/app/` contains a complete example including the repository
+and the switching code.
 
-worktree ごとに `./.local/dynamo.db` を作れば環境を分離できます。
-dynar 自身は Git や worktree を認識せず、namespace 管理も行いません。
+Creating `./.local/dynamo.db` per worktree isolates environments.
+dynar itself is unaware of Git, worktrees, and namespaces.
 
-## 対応 API
+## Supported APIs
 
-| API | 状態 | 備考 |
+| API | Status | Notes |
 |---|---|---|
-| CreateTable | 対応 | HASH / RANGE キー。BillingMode, DeletionProtectionEnabled, Tags 対応。GSI/LSI/Stream はエラー |
-| DescribeTable | 対応 | waiter (`TableExists`) も動作 |
-| ListTables | 対応 | Limit / ExclusiveStartTableName のページング対応 |
-| DeleteTable | 対応 | DeletionProtectionEnabled を考慮 |
-| PutItem | 対応 | ConditionExpression, ReturnValues(NONE/ALL_OLD), ReturnValuesOnConditionCheckFailure |
-| GetItem | 対応 | ProjectionExpression, ConsistentRead は受理（ローカルでは常に consistent） |
-| UpdateItem | 対応 | SET / REMOVE / ADD / DELETE。if_not_exists, list_append, + / - |
-| DeleteItem | 対応 | ConditionExpression, ReturnValues(NONE/ALL_OLD) |
-| Query | 対応 | KeyConditionExpression, FilterExpression, ScanIndexForward, Limit, ExclusiveStartKey, Select |
-| Scan | 対応 | FilterExpression, Limit, ExclusiveStartKey, Select |
-| ListTagsOfResource / TagResource / UntagResource | 対応 | |
-| その他の API | 未対応 | `ValidationException`（HTTP 400）で明示的に失敗。SDK のリトライは発生しません |
+| CreateTable | Supported | HASH / RANGE keys. BillingMode, DeletionProtectionEnabled, Tags supported. GSI/LSI/Stream rejected with an error |
+| DescribeTable | Supported | The `TableExists` waiter works |
+| ListTables | Supported | Limit / ExclusiveStartTableName pagination |
+| DeleteTable | Supported | Honors DeletionProtectionEnabled |
+| PutItem | Supported | ConditionExpression, ReturnValues(NONE/ALL_OLD), ReturnValuesOnConditionCheckFailure |
+| GetItem | Supported | ProjectionExpression, ConsistentRead accepted (local reads are always consistent) |
+| UpdateItem | Supported | SET / REMOVE / ADD / DELETE. if_not_exists, list_append, + / - |
+| DeleteItem | Supported | ConditionExpression, ReturnValues(NONE/ALL_OLD) |
+| Query | Supported | KeyConditionExpression, FilterExpression, ScanIndexForward, Limit, ExclusiveStartKey, Select |
+| Scan | Supported | FilterExpression, Limit, ExclusiveStartKey, Select |
+| ListTagsOfResource / TagResource / UntagResource | Supported | |
+| All other APIs | Unsupported | Fails explicitly with `ValidationException` (HTTP 400); the SDK does not retry |
 
-## 対応する式・オプション
+## Supported expressions and options
 
-- `ExpressionAttributeNames`（`#name`）/ `ExpressionAttributeValues`（`:name`）
-- 条件式 / フィルタ式: `=`, `<>`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IN`,
-  `AND` / `OR` / `NOT`, `attribute_exists`, `attribute_not_exists`,
-  `attribute_type`, `begins_with`, `contains`, `size`
-- 更新式: `SET`（`=`、`+`、`-`、`if_not_exists`、`list_append`）、`REMOVE`、
-  `ADD`（数値とセット）、`DELETE`（セット）
-- 射影式: `attr`、`attr.nested`、`attr[0]` のパス
-- Query のキー条件: partition key の等価 + sort key の
+- `ExpressionAttributeNames` (`#name`) / `ExpressionAttributeValues` (`:name`)
+- Condition / filter expressions: `=`, `<>`, `<`, `<=`, `>`, `>=`,
+  `BETWEEN`, `IN`, `AND` / `OR` / `NOT`, `attribute_exists`,
+  `attribute_not_exists`, `attribute_type`, `begins_with`, `contains`,
+  `size`
+- Update expressions: `SET` (`=`, `+`, `-`, `if_not_exists`,
+  `list_append`), `REMOVE`, `ADD` (numbers and sets), `DELETE` (sets)
+- Projection expressions: `attr`, `attr.nested`, `attr[0]` paths
+- Query key conditions: partition key equality plus sort key
   `=` / `<` / `<=` / `>` / `>=` / `BETWEEN` / `begins_with`
-- 属性値: `S` `N` `B` `BOOL` `NULL` `L` `M` `SS` `NS` `BS`
-- sort key の順序: `S` は UTF-8 のバイト順（Unicode コードポイント順）、
-  `N` は数値順、`B` はバイト列順。型の混在はキー定義上発生しません
-- `N` は文字列のまま保存・比較するため、float64 変換による精度低下はありません
+- Attribute values: `S` `N` `B` `BOOL` `NULL` `L` `M` `SS` `NS` `BS`
+- Sort key ordering: `S` is UTF-8 byte order (Unicode code point order),
+  `N` is numeric order, `B` is byte order. Mixed types cannot occur
+  within a key definition
+- `N` values are stored and compared as strings, so there is no
+  precision loss from float64 conversion
 
-## 既知の制限
+## Known limitations
 
-- 未対応の API（Transact*, Batch*, PartiQL の ExecuteStatement 等）は
-  HTTP 400 の `ValidationException` で失敗します。黙って成功にはしません
-- GSI / LSI / Streams / TTL / バックアップ / グローバルテーブルは未対応です
-- `ReturnConsumedCapacity` を指定した場合、固定値（1.0）を返します
-- ページングは `Limit` と `ExclusiveStartKey` のみで行います。
-  実サービスのようなレスポンスサイズ（1MB）による打ち切りはありません
-- `ConsistentRead` は受理しますが、ローカルでは常に consistent な読み取りです
-- 条件判定と書き込みは SQLite のトランザクションで原子的に行われ、
-  全操作は単一接続で直列化されます
-- DynamoDB Local / 実 AWS との完全一致は保証しません。
-  互換性の検証状況は `docs/compat.md` を参照してください
+- Unsupported APIs (Transact*, Batch*, PartiQL ExecuteStatement, etc.)
+  fail with `ValidationException` (HTTP 400) — they never silently
+  succeed
+- GSI / LSI / Streams / TTL / backups / global tables are unsupported
+- `ReturnConsumedCapacity` returns a fixed value (1.0)
+- Pagination uses only `Limit` and `ExclusiveStartKey`; there is no
+  1 MB response-size cutoff like the real service
+- `ConsistentRead` is accepted, but local reads are always consistent
+- Condition checks and writes are atomic via a SQLite transaction, and
+  all operations are serialized through a single connection
+- Exact parity with DynamoDB Local / real AWS is not guaranteed. See
+  `docs/compat.md` for the compatibility verification status
 
-## `Open` の仕様
+## `Open` semantics
 
-- `dynar.Open(path)`: ファイルがなければ作成し、あればスキーマを検査して再オープンします
-- `dynar.Open(":memory:")`: 呼び出しごとに独立した揮発 DB を作ります
-- 親ディレクトリが存在しない場合は作成しません（`unable to open database file` 相当のエラー）。
-  ディレクトリの作成は呼び出し側の責任です
-- 同じファイルを複数 handle で開くことは想定していません
-  （プロセス内では同一ファイルへの `Open` は既存 handle と競合します。SQLite のロックで保護されます）
-- スキーマにはバージョンがあり、dynar が管理していないファイルや
-  未来のバージョンのファイルは初期化・破壊せずエラーにします
+- `dynar.Open(path)`: creates the file if missing; validates the
+  schema and reopens it if present
+- `dynar.Open(":memory:")`: creates an independent volatile database
+  per call
+- A missing parent directory is not created (an
+  `unable to open database file`-style error). Creating directories is
+  the caller's responsibility
+- Opening the same file through multiple handles is not supported
+  (SQLite file locking protects against conflicts)
+- The schema is versioned; files not managed by dynar or files from a
+  newer version fail with an error instead of being initialized or
+  destroyed
 
-## DynamoDB Local との互換性テスト
+## Compatibility tests against DynamoDB Local
 
-同じシナリオを dynar と公式 DynamoDB Local の両方に実行する比較テストを
-`internal/compat` に用意しています。手順は `docs/compat.md` を参照してください。
-通常の `go test ./...` は外部サービスなしで実行できます。
+`internal/compat` contains a comparison suite that runs the same
+scenarios against both dynar and the official DynamoDB Local. See
+`docs/compat.md` for instructions. The normal `go test ./...` runs
+with no external services.
 
-## 設計
+## Design
 
-- `Open` が返す `*dynar.DB` が SQLite の `*sql.DB` を保持し、寿命は Open/Close で管理します
-- `HTTPClient()` が返すトランスポートは `X-Amz-Target` で操作をディスパッチし、
-  DynamoDB の JSON プロトコル（`application/x-amz-json-1.0`）を境界にします。
-  SDK の middleware や operation 単位のモックには依存しません
-- 各 DynamoDB テーブルは 1 つの SQLite テーブルに対応し、
-  キーは順序を保存するエンコーディングで BLOB 列に格納します
-- SQLite ドライバーは CGO 不要の `modernc.org/sqlite` を採用しています。
-  選定理由は `docs/design.md` を参照してください
+- `*dynar.DB` returned by `Open` holds a SQLite `*sql.DB`; its lifetime
+  is managed by Open/Close
+- The transport returned by `HTTPClient()` dispatches on
+  `X-Amz-Target` and uses the DynamoDB JSON protocol
+  (`application/x-amz-json-1.0`) as its boundary. It does not depend on
+  SDK middleware or per-operation mocks
+- Each DynamoDB table maps to one SQLite table, with keys stored in
+  BLOB columns using an order-preserving encoding
+- The SQLite driver is the CGO-free `modernc.org/sqlite`. See
+  `docs/design.md` for the rationale

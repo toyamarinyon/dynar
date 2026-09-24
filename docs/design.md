@@ -1,8 +1,8 @@
-# dynar 設計メモ
+# dynar design notes
 
-## 公開 API
+## Public API
 
-公開面は意図的に最小にする。
+The public surface is deliberately minimal.
 
 ```go
 type DB struct{ ... }
@@ -12,129 +12,149 @@ func (db *DB) Close() error
 func (db *DB) HTTPClient() aws.HTTPClient
 ```
 
-- `Open` はファイルパスまたは `":memory:"` を受け取る。
-- `HTTPClient()` は AWS SDK v2 の `aws.HTTPClient`（`Do(*http.Request)`）を返す。
-  `dynamodb.Options.HTTPClient` に直接渡す。
-- 将来必要になったときだけ `Option` 関数や `Must` を足せるように、
-  初版では追加しない。
+- `Open` takes a file path or `":memory:"`.
+- `HTTPClient()` returns the AWS SDK v2 `aws.HTTPClient`
+  (`Do(*http.Request)`); pass it directly to
+  `dynamodb.Options.HTTPClient`.
+- `Option` functions or `Must` helpers are intentionally absent from
+  the first version; they can be added when actually needed.
 
-## 境界: HTTP / DynamoDB プロトコル
+## Boundary: the HTTP / DynamoDB protocol
 
-SDK は DynamoDB に `application/x-amz-json-1.0` の JSON RPC を話す
-（`X-Amz-Target: DynamoDB_20120810.<Op>`、POST `/`）。
-dynar はこのリクエスト/レスポンス形式だけを実装する。
-SDK の middleware・リトライ・認証・エンドポイント解決には一切手を入れない。
+The SDK speaks JSON RPC with `application/x-amz-json-1.0` to DynamoDB
+(`X-Amz-Target: DynamoDB_20120810.<Op>`, `POST /`). dynar implements
+only this request/response format. It does not touch the SDK's
+middleware, retries, authentication, or endpoint resolution.
 
-- リクエストの URL・Authorization は無視する（検証もしない）。
-- エラーは `{ "__type": "com.amazonaws.dynamodb.v20120810#<Type>", "message": "..." }`
-  と HTTP 400 で返す。SDK は型付き例外にデコードし、`errors.As` が効く。
-- 未対応操作は `ValidationException`（400、非リトライ）で即座に失敗させる。
-  5xx や接続エラーを返すと SDK がリトライして待たされるため使わない。
-- Close 後のリクエストも同じく 400 で失敗させる（SDK のリトライを避けるため
-  Go エラーではなく HTTP エラーレスポンスを返す）。
-- context のキャンセルは `req.Context().Done()` を各処理の入口で確認し、
-  `*url.Error` に包んで返す。
+- Request URLs and Authorization headers are ignored (not validated).
+- Errors are returned as
+  `{ "__type": "com.amazonaws.dynamodb.v20120810#<Type>", "message": "..." }`
+  with HTTP 400. The SDK decodes them into typed exceptions, so
+  `errors.As` works.
+- Unsupported operations fail immediately with `ValidationException`
+  (400, non-retryable). 5xx or connection errors are never used because
+  the SDK would retry them and stall the caller.
+- Requests after Close also fail with 400 (returned as an HTTP error
+  response rather than a Go error, to avoid SDK retries).
+- Context cancellation is checked via `req.Context().Done()` at the
+  entry of each handler and returned wrapped in `*url.Error`.
 
-## SQLite ドライバー選定: `modernc.org/sqlite`
+## SQLite driver choice: `modernc.org/sqlite`
 
-候補:
+Candidates:
 
-| ドライバー | CGO | 備考 |
+| Driver | CGO | Notes |
 |---|---|---|
-| `github.com/mattn/go-sqlite3` | 必要 | 実績十分だが consumer に C ツールチェーンを要求する |
-| `modernc.org/sqlite` | 不要 | SQLite を Go に変換した実装。`database/sql` 準拠 |
-| `zombiezen.com/go/sqlite` | 不要 | 高機能だが独自 API が中心で `database/sql` との併用は別レイヤ |
+| `github.com/mattn/go-sqlite3` | Required | Battle-tested, but demands a C toolchain from consumers |
+| `modernc.org/sqlite` | Not required | SQLite transpiled to Go; `database/sql` compliant |
+| `zombiezen.com/go/sqlite` | Not required | Feature-rich but centered on its own API; `database/sql` interop is a separate layer |
 
-採用: **modernc.org/sqlite**。consumer のインストール体験（`go build` が
-そのまま通る、クロスコンパイルが効く）を最優先した。
-依存サイズは大きい（SQLite 全体を含む）が、dev 用途のライブラリとして許容する。
-`database/sql` 経由なので将来ドライバーを差し替えることも可能。
+Chosen: **modernc.org/sqlite**, prioritizing the consumer install
+experience (plain `go build` works, cross-compilation works). The
+dependency is large (it contains all of SQLite), which is acceptable
+for a development-focused library. Because access goes through
+`database/sql`, the driver could be swapped later.
 
-## 接続モデル
+## Connection model
 
-- `*sql.DB` に `SetMaxOpenConns(1)` を設定し、全操作を 1 接続に直列化する。
-  - `:memory:` で接続ごとに別 DB が作られる問題を回避する。
-  - `SQLITE_BUSY` を構造的に排除し、条件判定+書き込みの原子性を
-    単純なトランザクションで保証する。
-  - ローカル開発用途ではスループットは問題にならない。
-- `SetMaxIdleConns(1)`、`ConnMaxLifetime`/`IdleTime` 無制限で、
-  接続が途中で閉じて in-memory DB が消失しないようにする。
+- `SetMaxOpenConns(1)` on the `*sql.DB` serializes all operations
+  through a single connection.
+  - Avoids the problem where `:memory:` creates a separate database
+    per connection.
+  - Structurally eliminates `SQLITE_BUSY` and keeps the
+    condition-check-then-write sequence atomic inside a simple
+    transaction.
+  - Throughput is not a concern for local development use.
+- `SetMaxIdleConns(1)` and unlimited `ConnMaxLifetime`/`IdleTime` keep
+  the connection from closing mid-session and losing the in-memory
+  database.
 
-## ストレージスキーマ
+## Storage schema
 
 ```
 dynar_meta(key TEXT PRIMARY KEY, value TEXT)     -- schema_version
-dynar_tables(name TEXT PRIMARY KEY,              -- テーブルカタログ
+dynar_tables(name TEXT PRIMARY KEY,              -- table catalog
              hash_key TEXT, hash_type TEXT,
-             range_key TEXT, range_type TEXT,    -- NULL = ソートキーなし
+             range_key TEXT, range_type TEXT,    -- NULL = no sort key
              status TEXT, created_at REAL,
              billing_mode TEXT, deletion_protection INT,
              provisioned_rcu INT, provisioned_wcu INT,
              tags TEXT)                          -- JSON
-dynar_data_<sanitized>(                          -- テーブルごとに1つ
+dynar_data_<sanitized>(                          -- one per table
     pk   BLOB NOT NULL,
     sk   BLOB NOT NULL DEFAULT '',
-    item TEXT NOT NULL,                          -- AttributeValue map の正準 JSON
+    item TEXT NOT NULL,                          -- canonical JSON of the AttributeValue map
     PRIMARY KEY (pk, sk))
 ```
 
-- `pk`/`sk` は**順序を保存するキーエンコーディング**で格納する。
-  Query の `ORDER BY pk, sk` がそのまま DynamoDB のソート順になる。
-  - `S`: `0x01` + UTF-8（0x00 を `0x00 0xFF` にエスケープ、終端 `0x00 0x00`）
-  - `N`: `0x02` + 符号 + 指数(2バイト, biased) + 仮数の十進桁列。
-    正規化は文字列上で行い、float64 を通さないので精度を失わない。
-    負数はペイロードをビット反転して逆順にする。
-  - `B`: `0x03` + バイト列（同様にエスケープ+終端）
-- `item` 列は DynamoDB 形式の JSON（`{"attr":{"S":"v"}}`）をそのまま保持。
-  属性値コーデックは自前で実装し、N は文字列のまま往復する。
-- テーブル名→SQLite テーブル名の変換は `dynar_data_` プレフィックス + 
-  ダブルクォートでエスケープ（DynamoDB のテーブル名文字種 `[a-zA-Z0-9_.-]` では
-  インジェクションは成立しないが、防御のため `sqlite3_str` 相当のクォートを行う）。
+- `pk`/`sk` are stored with an **order-preserving key encoding**, so
+  `ORDER BY pk, sk` in Query directly produces DynamoDB sort order.
+  - `S`: `0x01` + UTF-8 (`0x00` escaped as `0x00 0xFF`, terminated by
+    `0x00 0x00`)
+  - `N`: `0x02` + sign + exponent (2 bytes, biased) + decimal digit
+    mantissa. Normalization happens on the string form without going
+    through float64, so no precision is lost. Negative numbers have
+    their payload bit-inverted to reverse order.
+  - `B`: `0x03` + bytes (escaped + terminated the same way)
+- The `item` column holds DynamoDB-format JSON (`{"attr":{"S":"v"}}`)
+  verbatim. The attribute-value codec is implemented in-house so `N`
+  round-trips as a string.
+- Table name → SQLite table name uses the `dynar_data_` prefix plus
+  double-quote escaping (DynamoDB table names `[a-zA-Z0-9_.-]` cannot
+  produce injection, but quoting is applied defensively anyway).
 
-## `Open` の仕様
+## `Open` semantics
 
-- 新規ファイル: 作成してスキーマを初期化、`schema_version=1` を記録。
-- 既存ファイル: `dynar_meta` の存在と `schema_version` を検査。
-  - dynar 管理でないファイル（メタテーブルなし）→ エラー（初期化しない）。
-    ※ 空ファイル（サイズ 0）は新規とみなして初期化する。
-  - 未来のバージョン → エラー。
-- `":memory:"`: `Open` ごとに独立した DB（単一接続の :memory:）。
-- 親ディレクトリがなければ SQLite のオープンエラーをそのまま返す
-  （ディレクトリを暗黙作成しない）。
-- 同一ファイルの複数 handle: SQLite のファイルロックに委ねる。
-  WAL は使わずデフォルトのジャーナルモード。
+- New file: created, schema initialized, `schema_version=1` recorded.
+- Existing file: `dynar_meta` presence and `schema_version` checked.
+  - Files not managed by dynar (no meta table) → error (not
+    initialized). An empty file (size 0) is treated as new and
+    initialized.
+  - Newer version → error.
+- `":memory:"`: an independent database per `Open` (a
+  single-connection :memory:).
+- A missing parent directory propagates SQLite's open error (the
+  directory is not created implicitly).
+- Multiple handles on the same file: left to SQLite file locking.
+  WAL is not used; the default journal mode applies.
 
-## 式エンジン
+## Expression engine
 
-自前の小さな tokenizer + 再帰下降パーサで実装する。
+Implemented with a small hand-written tokenizer + recursive-descent
+parser.
 
-- Condition / Filter / KeyCondition: 比較、`BETWEEN`、`IN`、`AND/OR/NOT`、
-  `attribute_exists` / `attribute_not_exists` / `attribute_type` /
-  `begins_with` / `contains` / `size`
-- Update: `SET`（`=`、`+`/`-`、`if_not_exists`、`list_append`）、
-  `REMOVE`、`ADD`、`DELETE`
-- Projection: `a`, `a.b`, `a[0]` のパス
-- `#name` → ExpressionAttributeNames、`:name` → ExpressionAttributeValues
-- DynamoDB の予約語リストを持ち、裸の識別子が予約語なら `ValidationException`。
-- 対応外の構文・関数はパース時点で `ValidationException` にする。
-  無視して近似しない。
+- Condition / Filter / KeyCondition: comparisons, `BETWEEN`, `IN`,
+  `AND/OR/NOT`, `attribute_exists` / `attribute_not_exists` /
+  `attribute_type` / `begins_with` / `contains` / `size`
+- Update: `SET` (`=`, `+`/`-`, `if_not_exists`, `list_append`),
+  `REMOVE`, `ADD`, `DELETE`
+- Projection: `a`, `a.b`, `a[0]` paths
+- `#name` → ExpressionAttributeNames, `:name` →
+  ExpressionAttributeValues
+- Carries the DynamoDB reserved-word list; a bare identifier that is
+  reserved yields `ValidationException`.
+- Unsupported syntax or functions fail at parse time with
+  `ValidationException` — never ignored or approximated.
 
-## エラー対応
+## Error mapping
 
-| DynamoDB 例外 | 使う場面 |
+| DynamoDB exception | Used for |
 |---|---|
-| ValidationException | 入力不正・未対応 API/式/オプション |
-| ResourceNotFoundException | 存在しないテーブル |
-| ResourceInUseException | 既存テーブルの作成・削除中の操作 |
-| ConditionalCheckFailedException | 条件失敗（ReturnValuesOnConditionCheckFailure=ALL_OLD で Item を同梱） |
-| InternalServerError | dynar 内部の予期しない失敗 |
+| ValidationException | Invalid input, unsupported API/expression/option |
+| ResourceNotFoundException | Nonexistent table |
+| ResourceInUseException | Creating an existing table, operating on a deleting table |
+| ConditionalCheckFailedException | Condition failure (includes Item when ReturnValuesOnConditionCheckFailure=ALL_OLD) |
+| InternalServerError | Unexpected failures inside dynar |
 
-## 互換性テスト
+## Compatibility testing
 
-`internal/compat` に `*dynamodb.Client` を受け取る共通シナリオを置き、
+`internal/compat` holds shared scenarios that take a
+`*dynamodb.Client`:
 
-- 通常テスト: dynar（:memory: とファイル）に対して実行
-- `//go:build dynamodblocal`: `DYNAMODB_LOCAL_ENDPOINT` への client で実行
+- Normal tests: run against dynar (`:memory:` and file)
+- `//go:build dynamodblocal`: run against a client pointed at
+  `DYNAMODB_LOCAL_ENDPOINT`
 
-として両方に走らせる。比較テスト実行時に接続できなければ skip せず失敗。
-DynamoDB Local のバージョンは `docs/compat.md` に固定して記載。
+If the comparison tests are run explicitly and the endpoint is
+unreachable, they fail rather than skip. The DynamoDB Local version is
+pinned in `docs/compat.md`.
