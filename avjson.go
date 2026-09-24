@@ -265,6 +265,77 @@ func validateAV(av types.AttributeValue) error {
 	}
 }
 
+// itemSize approximates DynamoDB's item size accounting: the sum of
+// attribute name lengths (UTF-8 bytes) and attribute value sizes. Raw
+// binary length counts, not its base64 transport encoding.
+func itemSize(item map[string]types.AttributeValue) int64 {
+	var total int64
+	for name, av := range item {
+		total += int64(len(name)) + avSize(av)
+	}
+	return total
+}
+
+// avSize returns the value portion of an attribute's size, per
+// DynamoDB's documented rules: L and M carry 3 bytes of overhead plus
+// 1 byte per element; sets have no overhead beyond their elements.
+func avSize(av types.AttributeValue) int64 {
+	switch v := av.(type) {
+	case *types.AttributeValueMemberS:
+		return int64(len(v.Value))
+	case *types.AttributeValueMemberN:
+		return numberSize(v.Value)
+	case *types.AttributeValueMemberB:
+		return int64(len(v.Value))
+	case *types.AttributeValueMemberBOOL:
+		return 1
+	case *types.AttributeValueMemberNULL:
+		return 1
+	case *types.AttributeValueMemberSS:
+		var n int64
+		for _, e := range v.Value {
+			n += int64(len(e))
+		}
+		return n
+	case *types.AttributeValueMemberNS:
+		var n int64
+		for _, e := range v.Value {
+			n += numberSize(e)
+		}
+		return n
+	case *types.AttributeValueMemberBS:
+		var n int64
+		for _, e := range v.Value {
+			n += int64(len(e))
+		}
+		return n
+	case *types.AttributeValueMemberL:
+		n := int64(3)
+		for _, e := range v.Value {
+			n += 1 + avSize(e)
+		}
+		return n
+	case *types.AttributeValueMemberM:
+		n := int64(3)
+		for k, e := range v.Value {
+			n += 1 + int64(len(k)) + avSize(e)
+		}
+		return n
+	default:
+		return 0
+	}
+}
+
+// numberSize is (1 byte per two significant digits) + 1 byte.
+// Leading and trailing zeros do not count; zero itself is 1 byte.
+func numberSize(s string) int64 {
+	_, digits, _, err := parseDecimal(s)
+	if err != nil || digits == "" {
+		return 1
+	}
+	return int64(len(digits)+1)/2 + 1
+}
+
 // validateNumber checks DynamoDB's number constraints: decimal syntax,
 // at most 38 significant digits, and a bounded exponent range.
 func validateNumber(s string) error {

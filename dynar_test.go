@@ -670,11 +670,11 @@ func TestErrorTypes(t *testing.T) {
 	}
 
 	// unsupported operation -> ValidationException, not a retry storm
-	_, err = c.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
-		TransactItems: []types.TransactWriteItem{
-			{Put: &types.Put{
+	_, err = c.TransactGetItems(ctx, &dynamodb.TransactGetItemsInput{
+		TransactItems: []types.TransactGetItem{
+			{Get: &types.Get{
 				TableName: aws.String("tbl"),
-				Item:      map[string]types.AttributeValue{"pk": s("x")},
+				Key:       map[string]types.AttributeValue{"pk": s("x")},
 			}},
 		},
 	})

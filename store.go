@@ -78,6 +78,10 @@ func initSchema(sdb *sql.DB) error {
 				deletion_protection INTEGER NOT NULL DEFAULT 0,
 				provisioned_rcu INTEGER, provisioned_wcu INTEGER,
 				tags TEXT)`,
+			`CREATE TABLE dynar_tokens (
+				token TEXT PRIMARY KEY,
+				request BLOB NOT NULL,
+				created_at REAL NOT NULL)`,
 			`INSERT INTO dynar_meta (key, value) VALUES ('schema_version', '` + schemaVersion + `')`,
 			`PRAGMA busy_timeout = 5000`,
 		}
@@ -99,6 +103,12 @@ func initSchema(sdb *sql.DB) error {
 	}
 	if v != schemaVersion {
 		return fmt.Errorf("dynar: unsupported schema version %q (this build supports %q)", v, schemaVersion)
+	}
+	if _, err := sdb.Exec(`CREATE TABLE IF NOT EXISTS dynar_tokens (
+		token TEXT PRIMARY KEY,
+		request BLOB NOT NULL,
+		created_at REAL NOT NULL)`); err != nil {
+		return fmt.Errorf("dynar: failed to initialize database: %w", err)
 	}
 	if _, err := sdb.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
 		return fmt.Errorf("dynar: %w", err)

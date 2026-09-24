@@ -129,6 +129,9 @@ func errorPayloadFrom(e *apiError) map[string]any {
 	if e.item != nil {
 		p["Item"] = e.item
 	}
+	for k, v := range e.extra {
+		p[k] = v
+	}
 	return p
 }
 
@@ -161,6 +164,8 @@ func (c *httpClient) dispatch(ctx context.Context, op string, in map[string]any)
 		return c.db.opUpdateItem(ctx, in)
 	case "DeleteItem":
 		return c.db.opDeleteItem(ctx, in)
+	case "TransactWriteItems":
+		return c.db.opTransactWriteItems(ctx, in)
 	case "Query":
 		return c.db.opQuery(ctx, in)
 	case "Scan":

@@ -115,12 +115,11 @@ func (db *DB) opPutItem(ctx context.Context, in map[string]any) (any, *apiError)
 	if sk == nil {
 		sk = []byte{}
 	}
-
-	wire := itemToWire(item)
-	enc, _ := json.Marshal(wire)
-	if len(enc) > maxItemSize {
+	if itemSize(item) > maxItemSize {
 		return nil, errValidation("Item size has exceeded the maximum allowed size")
 	}
+	wire := itemToWire(item)
+	enc, _ := json.Marshal(wire)
 
 	env, aerr := getExprEnv(in)
 	if aerr != nil {
@@ -324,11 +323,11 @@ func (db *DB) opUpdateItem(ctx context.Context, in map[string]any) (any, *apiErr
 		if e := validateItem(newItem); e != nil {
 			return errValidation("One or more parameter values were invalid: %v", e)
 		}
-		wire := itemToWire(newItem)
-		enc, _ := json.Marshal(wire)
-		if len(enc) > maxItemSize {
+		if itemSize(newItem) > maxItemSize {
 			return errValidation("Item size has exceeded the maximum allowed size")
 		}
+		wire := itemToWire(newItem)
+		enc, _ := json.Marshal(wire)
 		_, e = tx.ExecContext(ctx,
 			`INSERT OR REPLACE INTO `+dataTableName(t.name)+` (pk, sk, item) VALUES (?,?,?)`,
 			pk, sk, string(enc))

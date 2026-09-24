@@ -5,9 +5,10 @@ import "fmt"
 // apiError is a DynamoDB-shaped error: a type name the SDK can decode
 // into its typed exceptions plus a message.
 type apiError struct {
-	typ  string
-	msg  string
-	item map[string]any // optional, for ConditionalCheckFailedException
+	typ   string
+	msg   string
+	item  map[string]any // optional, for ConditionalCheckFailedException
+	extra map[string]any // optional additional fields, e.g. CancellationReasons
 }
 
 func (e *apiError) Error() string { return e.typ + ": " + e.msg }

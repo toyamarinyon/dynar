@@ -113,6 +113,7 @@ dynar itself is unaware of Git, worktrees, and namespaces.
 | GetItem | Supported | ProjectionExpression, ConsistentRead accepted (local reads are always consistent) |
 | UpdateItem | Supported | SET / REMOVE / ADD / DELETE. if_not_exists, list_append, + / - |
 | DeleteItem | Supported | ConditionExpression, ReturnValues(NONE/ALL_OLD) |
+| TransactWriteItems | Supported | Put / Update / Delete / ConditionCheck, per-item ConditionExpression, all-or-nothing atomicity, CancellationReasons, ClientRequestToken idempotency (10-minute window). ReturnItemCollectionMetrics rejected |
 | Query | Supported | KeyConditionExpression, FilterExpression, ScanIndexForward, Limit, ExclusiveStartKey, Select |
 | Scan | Supported | FilterExpression, Limit, ExclusiveStartKey, Select |
 | ListTagsOfResource / TagResource / UntagResource | Supported | |
@@ -139,9 +140,9 @@ dynar itself is unaware of Git, worktrees, and namespaces.
 
 ## Known limitations
 
-- Unsupported APIs (Transact*, Batch*, PartiQL ExecuteStatement, etc.)
-  fail with `ValidationException` (HTTP 400) — they never silently
-  succeed
+- Unsupported APIs (TransactGetItems, Batch*, PartiQL
+  ExecuteStatement, etc.) fail with `ValidationException` (HTTP 400) —
+  they never silently succeed
 - GSI / LSI / Streams / TTL / backups / global tables are unsupported
 - `ReturnConsumedCapacity` returns a fixed value (1.0)
 - Pagination uses only `Limit` and `ExclusiveStartKey`; there is no
